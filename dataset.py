@@ -20,18 +20,18 @@ def one_hot(x):
 
 
 def fragment_indices(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins):
-    for seq_i, sequence in enumerate(full_sequences):
-        # range_values = np.linspace(np.iinfo(sequence.dtype).min, np.iinfo(sequence.dtype).max, nb_output_bins)
-        # digitized = np.digitize(sequence, range_values).astype('uint8')
-        for i in xrange(0, sequence.shape[0] - fragment_length, fragment_stride):
-            yield seq_i, i
+   for seq_i, sequence in enumerate(full_sequences):
+      # range_values = np.linspace(np.iinfo(sequence.dtype).min, np.iinfo(sequence.dtype).max, nb_output_bins)
+      # digitized = np.digitize(sequence, range_values).astype('uint8')
+        for i in range(0, sequence.shape[0] - fragment_length, fragment_stride):
+         yield seq_i, i
 
 
 def select_generator(set_name, random_train_batches, full_sequences, fragment_length, batch_size, fragment_stride,
                      nb_output_bins, randomize_batch_order, _rnd):
-    if random_train_batches and set_name == 'train':
-        bg = random_batch_generator
-    else:
+   if random_train_batches and set_name == 'train':
+      bg = random_batch_generator
+   else:
         bg = batch_generator
     return bg(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins, randomize_batch_order, _rnd)
 
@@ -77,18 +77,18 @@ def generators(dirname, desired_sample_rate, fragment_length, batch_size, fragme
                                                          fragment_length,
                                                          batch_size, fragment_stride, nb_output_bins,
                                                          randomize_batch_order, _rnd)
-        nb_examples[set_name] = int(sum(
-            [len(xrange(0, x.shape[0] - fragment_length, fragment_stride)) for x in
-             full_sequences]) / batch_size) * batch_size
+      nb_examples[set_name] = int(sum(
+            [len(range(0, x.shape[0] - fragment_length, fragment_stride)) for x in
+            full_sequences]) / batch_size) * batch_size
 
-    return fragment_generators, nb_examples
+   return fragment_generators, nb_examples
 
 
 def generators_vctk(dirname, desired_sample_rate, fragment_length, batch_size, fragment_stride, nb_output_bins,
                     learn_all_outputs, use_ulaw, test_factor, randomize_batch_order, _rnd, random_train_batches):
-    fragment_generators = {}
-    nb_examples = {}
-    speaker_dirs = os.listdir(dirname)
+   fragment_generators = {}
+   nb_examples = {}
+   speaker_dirs = os.listdir(dirname)
     train_full_sequences = []
     test_full_sequences = []
     for speaker_dir in speaker_dirs:
@@ -103,20 +103,20 @@ def generators_vctk(dirname, desired_sample_rate, fragment_length, batch_size, f
                                                          batch_size, fragment_stride, nb_output_bins,
                                                          randomize_batch_order, _rnd)
         nb_examples[set_name] = int(sum(
-            [len(xrange(0, x.shape[0] - fragment_length, fragment_stride)) for x in
-             full_sequences]) / batch_size) * batch_size
+            [len(range(0, x.shape[0] - fragment_length, fragment_stride)) for x in
+            full_sequences]) / batch_size) * batch_size
 
-    return fragment_generators, nb_examples
+   return fragment_generators, nb_examples
 
 
 def load_set(desired_sample_rate, set_dirname, use_ulaw):
-    ulaw_str = '_ulaw' if use_ulaw else ''
-    cache_fn = os.path.join(set_dirname, 'processed_%d%s.npy' % (desired_sample_rate, ulaw_str))
-    if os.path.isfile(cache_fn):
-        full_sequences = np.load(cache_fn)
-    else:
-        file_names = [fn for fn in os.listdir(set_dirname) if fn.endswith('.wav')]
-        full_sequences = []
+   ulaw_str = '_ulaw' if use_ulaw else ''
+   cache_fn = os.path.join(set_dirname, 'processed_%d%s.npy' % (desired_sample_rate, ulaw_str))
+   if os.path.isfile(cache_fn):
+      full_sequences = np.load(cache_fn, fix_imports=True, encoding='bytes')
+   else:
+      file_names = [fn for fn in os.listdir(set_dirname) if fn.endswith('.wav')]
+      full_sequences = []
         for fn in tqdm(file_names):
             sequence = process_wav(desired_sample_rate, os.path.join(set_dirname, fn), use_ulaw)
             full_sequences.append(sequence)

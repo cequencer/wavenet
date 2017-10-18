@@ -10,7 +10,7 @@ import keras.backend as K
 import numpy as np
 import scipy.io.wavfile
 import scipy.signal
-import theano
+
 from keras import layers
 from keras import metrics
 from keras import objectives
@@ -24,7 +24,8 @@ from sacred.commands import print_config
 from tqdm import tqdm
 
 import dataset
-from wavenet_utils import CausalAtrousConvolution1D, categorical_mean_squared_error
+from keras.layers import Conv1D
+from wavenet_utils import categorical_mean_squared_error
 
 ex = Experiment('wavenet')
 
@@ -193,7 +194,7 @@ def make_soft(y_true, fragment_length, nb_output_bins, train_with_soft_target_st
     # y_true: [batch, timesteps, input_dim]
     y_true = K.reshape(y_true, (-1, 1, nb_output_bins, 1))  # Same filter for all output; combine with batch.
     # y_true: [batch*timesteps, n_channels=1, input_dim, dummy]
-    y_true = K.conv2d(y_true, kernel, border_mode='same')
+    y_true = K.conv2d(y_true, kernel, padding='same')
     y_true = K.reshape(y_true, (-1, n_outputs, nb_output_bins))  # Same filter for all output; combine with batch.
     # y_true: [batch, timesteps, input_dim]
     y_true /= K.sum(y_true, axis=-1, keepdims=True)
@@ -223,28 +224,37 @@ def build_model(fragment_length, nb_filters, nb_output_bins, dilation_depth, nb_
         original_x = x
         # TODO: initalization, regularization?
         # Note: The AtrousConvolution1D with the 'causal' flag is implemented in github.com/basveeling/keras#@wavenet.
-        tanh_out = CausalAtrousConvolution1D(nb_filters, 2, atrous_rate=2 ** i, border_mode='valid', causal=True,
-                                             bias=use_bias,
-                                             name='dilated_conv_%d_tanh_s%d' % (2 ** i, s), activation='tanh',
-                                             W_regularizer=l2(res_l2))(x)
-        sigm_out = CausalAtrousConvolution1D(nb_filters, 2, atrous_rate=2 ** i, border_mode='valid', causal=True,
-                                             bias=use_bias,
-                                             name='dilated_conv_%d_sigm_s%d' % (2 ** i, s), activation='sigmoid',
-                                             W_regularizer=l2(res_l2))(x)
+        tanh_out = Conv1D(
+            nb_filters,
+            2,
+            dilation_rate=2**i,
+            padding='causal',
+            bias=use_bias,
+            name='dilated_conv_%d_tanh_s%d' % (2**i, s),
+            activation='tanh',
+            W_regularizer=l2(res_l2)
+        )(x)
+        sigm_out = Conv1D(
+            nb_filters,
+            2,
+            dilation_rate=2**i,
+            padding='causal',
+            bias=use_bias,
+            name='dilated_conv_%d_sigm_s%d' % (2**i, s),
+            activation='sigmoid',
+            W_regularizer=l2(res_l2)
+        )(x)
         x = layers.Merge(mode='mul', name='gated_activation_%d_s%d' % (i, s))([tanh_out, sigm_out])
 
-        res_x = layers.Convolution1D(nb_filters, 1, border_mode='same', bias=use_bias,
-                                     W_regularizer=l2(res_l2))(x)
-        skip_x = layers.Convolution1D(nb_filters, 1, border_mode='same', bias=use_bias,
-                                      W_regularizer=l2(res_l2))(x)
+        res_x = layers.Conv1D(nb_filters, 1, padding='same', bias=use_bias, W_regularizer=l2(res_l2))(x)
+        skip_x = layers.Conv1D(nb_filters, 1, padding='same', bias=use_bias, W_regularizer=l2(res_l2))(x)
         res_x = layers.Merge(mode='sum')([original_x, res_x])
         return res_x, skip_x
 
     input = Input(shape=(fragment_length, nb_output_bins), name='input_part')
     out = input
     skip_connections = []
-    out = CausalAtrousConvolution1D(nb_filters, 2, atrous_rate=1, border_mode='valid', causal=True,
-                                    name='initial_causal_conv')(out)
+    out = Conv1D(nb_filters, 2, dilation_rate=1, padding='causal', name='initial_causal_conv')(out)
     for s in range(nb_stacks):
         for i in range(0, dilation_depth + 1):
             out, skip_out = residual_block(out)
@@ -253,15 +263,13 @@ def build_model(fragment_length, nb_filters, nb_output_bins, dilation_depth, nb_
     if use_skip_connections:
         out = layers.Merge(mode='sum')(skip_connections)
     out = layers.Activation('relu')(out)
-    out = layers.Convolution1D(nb_output_bins, 1, border_mode='same',
-                               W_regularizer=l2(final_l2))(out)
+    out = layers.Conv1D(nb_output_bins, 1, padding='same', W_regularizer=l2(final_l2))(out)
     out = layers.Activation('relu')(out)
-    out = layers.Convolution1D(nb_output_bins, 1, border_mode='same')(out)
+    out = layers.Conv1D(nb_output_bins, 1, padding='same')(out)
 
     if not learn_all_outputs:
         raise DeprecationWarning('Learning on just all outputs is wasteful, now learning only inside receptive field.')
-        out = layers.Lambda(lambda x: x[:, -1, :], output_shape=(out._keras_shape[-1],))(
-            out)  # Based on gif in deepmind blog: take last output?
+        out = layers.Lambda(lambda x: x[:, -1, :], output_shape=(out._keras_shape[-1],))(out)  # Based on gif in deepmind blog: take last output?
 
     out = layers.Activation('softmax', name="output_softmax")(out)
     model = Model(input, out)
@@ -336,7 +344,7 @@ def predict(desired_sample_rate, fragment_length, _log, seed, _seed, _config, pr
 
     # write_samples(sample_stream, outputs)
     warned_repetition = False
-    for i in tqdm(xrange(int(desired_sample_rate * predict_seconds))):
+    for i in tqdm(range(int(desired_sample_rate * predict_seconds))):
         if not warned_repetition:
             if np.argmax(outputs[-1]) == np.argmax(outputs[-2]) and np.argmax(outputs[-2]) == np.argmax(outputs[-3]):
                 warned_repetition = True
