@@ -530,9 +530,9 @@ def main(run_dir, data_dir, nb_epoch, early_stopping_patience, desired_sample_ra
         _log.info('Starting Training...')
 
     model.fit_generator(data_generators['train'],
-                        nb_examples['train'],
-                        nb_epoch=nb_epoch,
+                        nb_examples['train'] // 100,
+                        epochs=100,
+                        validation_steps=10,
                         validation_data=data_generators['test'],
-                        nb_val_samples=nb_examples['test'],
                         callbacks=callbacks,
                         verbose=keras_verbose)
