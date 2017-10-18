@@ -17,7 +17,7 @@ from keras import objectives
 from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, CSVLogger
 from keras.engine import Input
 from keras.engine import Model
-from keras.optimizers import Adam, SGD
+from keras.optimizers import Adam, SGD, Nadam, Adagrad, Adadelta, Adamax, RMSprop
 from keras.regularizers import l2
 from sacred import Experiment
 from sacred.commands import print_config
@@ -42,7 +42,7 @@ def config():
     batch_size = 16
     nb_output_bins = 256
     nb_filters = 256
-    dilation_depth = 9  #
+    dilation_depth = 9
     nb_stacks = 1
     use_bias = False
     use_ulaw = True
@@ -295,6 +295,17 @@ def compute_receptive_field_(desired_sample_rate, dilation_depth, nb_stacks):
 def make_optimizer(optimizer, lr, momentum, decay, nesterov, epsilon):
     if optimizer == 'sgd':
         optim = SGD(lr, momentum, decay, nesterov)
+    elif optimizer == 'nadam':
+        optim = Nadam()
+    elif optimizer == 'adamax':
+        optim = Adamax()
+    elif optimizer == 'adadelta':
+        optim = Adadelta()
+    elif optimizer == 'adagrad':
+        optim = Adagrad()
+    elif optimizer == 'rmsprop':
+        optim = RMSprop()
+
     elif optimizer == 'adam':
         optim = Adam(lr=lr, decay=decay, epsilon=epsilon)
     else:
@@ -384,12 +395,9 @@ def make_sample_name(epoch, predict_seconds, predict_use_softmax_as_input, sampl
 @ex.capture
 def write_samples(sample_file, out_val, use_ulaw):
     s = np.argmax(out_val, axis=-1).astype('uint8')
-    # print out_val,
     if use_ulaw:
         s = dataset.ulaw2lin(s)
-    # print s,
     s = bytearray(list(s))
-    # print s[0]
     sample_file.writeframes(s)
     sample_file._file.flush()
 
@@ -483,12 +491,13 @@ def main(run_dir, data_dir, nb_epoch, early_stopping_patience, desired_sample_ra
 
     _log.info('Running with seed %d' % seed)
 
+    checkpoint_dir = os.path.join(run_dir, 'checkpoints')
+
     if not debug:
-        if os.path.exists(run_dir):
-            raise EnvironmentError('Run with seed %d already exists' % seed)
-        os.mkdir(run_dir)
-        checkpoint_dir = os.path.join(run_dir, 'checkpoints')
-        json.dump(_config, open(os.path.join(run_dir, 'config.json'), 'w'))
+        if not os.path.exists(run_dir):
+            os.mkdir(run_dir)
+            os.mkdir(checkpoint_dir)
+            json.dump(_config, open(os.path.join(run_dir, 'config.json'), 'w'))
 
     _log.info('Loading data...')
     data_generators, nb_examples = get_generators()
@@ -525,14 +534,16 @@ def main(run_dir, data_dir, nb_epoch, early_stopping_patience, desired_sample_ra
             CSVLogger(os.path.join(run_dir, 'history.csv')),
         ])
 
-    if not debug:
-        os.mkdir(checkpoint_dir)
-        _log.info('Starting Training...')
+    checkpoints = sorted(os.listdir(checkpoint_dir))
+    if checkpoints:
+       last_checkpoint = checkpoints[-1]
+       _log.info('Loading existing weights ', os.path.join(checkpoint_dir, last_checkpoint))
+       model.load_weights(os.path.join(checkpoint_dir, last_checkpoint))
 
     model.fit_generator(data_generators['train'],
-                        nb_examples['train'] // 100,
-                        epochs=100,
-                        validation_steps=10,
+                        nb_examples['train'] // 500,
+                        epochs=500,
                         validation_data=data_generators['test'],
+                        validation_steps=50 // batch_size,
                         callbacks=callbacks,
                         verbose=keras_verbose)
