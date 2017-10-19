@@ -12,134 +12,73 @@ import scipy.signal
 from picklable_itertools import cycle
 from picklable_itertools.extras import partition_all
 from tqdm import tqdm
+from keras.utils.data_utils import Sequence
+
+class DataSequence(Sequence):
+
+    def __init__(self, dirname, sample_rate, fragment_length, batch_size, fragment_stride, nb_output_bins, learn_all_outputs, use_ulaw):
+        self.batch_size = batch_size
+        self.use_ulaw = use_ulaw
+        self.sample_rate = sample_rate
+        self.dirname = dirname
+        self.fragment_length = fragment_length
+        self.fragment_stride = fragment_stride
+        ulaw_extension = '.ulaw' if use_ulaw else ''
+        self.cache_extension = ".%d%s.npy" % (self.sample_rate, ulaw_extension)
+        # Filenames with extension to allow quickly finding wavs that have not yet
+        # been processed
+        self.wavs, self.caches = self.find_wavs_and_caches()
+        self.process_wavs()
+        sequences = self.load_caches()
+        self.indices = []
+        for sequence in sequences:
+            for index in range(0, len(sequence) - self.fragment_length, self.fragment_stride):
+                self.indices.append(index)
+        self.x = np.concatenate(sequences)
+
+    def __len__(self):
+        print("len is %d" % (len(self.indices) // self.batch_size))
+        return len(self.indices) // self.batch_size
+
+    def __getitem__(self, idx):
+        X = np.zeros((self.batch_size, self.fragment_length, 256), dtype='uint8')
+        Y = np.zeros((self.batch_size, self.fragment_length, 256), dtype='uint8')
+        for batch_index, start_index in enumerate(range(idx * self.batch_size, (idx + 1) * self.batch_size)):
+           for fragment_index, sequence_index in enumerate(range(start_index, start_index + self.fragment_length)):
+               X[batch_index][fragment_index][self.x[sequence_index]] = 1
+               Y[batch_index][fragment_index][self.x[sequence_index + 1]] = 1
+        return (X, Y)
+
+    def find_wavs_and_caches(self):
+        wav_files = {fn.name[0:-4] for fn in os.scandir(self.dirname) if fn.name.endswith('.wav')}
+        caches = {fn.name[0:-len(self.cache_extension)] for fn in os.scandir(self.dirname) if fn.name.endswith(self.cache_extension)}
+        return (wav_files, caches)
+
+    def process_wavs(self):
+       for wav_file in self.wavs - self.caches:
+           sequence = process_wav(wav_file)
+           np.save(os.path.join(set_dirname, "%s%s" % (wav_file, cache_extension)), sequence)
 
 
-# TODO: make SACRED ingredient.
-def one_hot(x):
-    return np.eye(256, dtype='uint8')[x.astype('uint8')]
+    def load_caches(self):
+       return [np.load(fn.path, encoding='bytes') for fn in os.scandir(self.dirname) if fn.name.endswith(self.cache_extension)]
+
+    def process_wav(self, wav):
+        filename = os.path.join(self.dirname, "%s.wav" % wav)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            file_sample_rate, audio = scipy.io.wavfile.read(filename)
+            audio = wav_to_float(ensure_mono(audio))
+            if self.use_ulaw:
+                audio = ulaw(audio)
+            audio = ensure_sample_rate(self.sample_rate, file_sample_rate, audio)
+            audio = float_to_uint8(audio)
+        return audio
 
 
-def fragment_indices(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins):
-    for seq_i, sequence in enumerate(full_sequences):
-        for i in range(0, sequence.shape[0] - fragment_length, fragment_stride):
-            yield seq_i, i
-
-
-def select_generator(set_name, random_train_batches, full_sequences, fragment_length, batch_size, fragment_stride,
-                     nb_output_bins, randomize_batch_order, _rnd):
-    if random_train_batches and set_name == 'train':
-        bg = random_batch_generator
-    else:
-        bg = batch_generator
-    return bg(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins, randomize_batch_order, _rnd)
-
-
-def batch_generator(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins, randomize_batch_order, _rnd):
-    indices = list(fragment_indices(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins))
-    if randomize_batch_order:
-        _rnd.shuffle(indices)
-
-    batches = cycle(partition_all(batch_size, indices))
-    for batch in batches:
-        if len(batch) < batch_size:
-            continue
-        yield np.array(
-            [one_hot(full_sequences[e[0]][e[1]:e[1] + fragment_length]) for e in batch], dtype='uint8'), np.array(
-            [one_hot(full_sequences[e[0]][e[1] + 1:e[1] + fragment_length + 1]) for e in batch], dtype='uint8')
-
-
-def random_batch_generator(full_sequences, fragment_length, batch_size, fragment_stride, nb_output_bins,
-                           randomize_batch_order, _rnd):
-    lengths = [x.shape[0] for x in full_sequences]
-    nb_sequences = len(full_sequences)
-    while True:
-        sequence_indices = _rnd.randint(0, nb_sequences, batch_size)
-        batch_inputs = []
-        batch_outputs = []
-        for i, seq_i in enumerate(sequence_indices):
-            l = lengths[seq_i]
-            offset = np.squeeze(_rnd.randint(0, l - fragment_length, 1))
-            batch_inputs.append(full_sequences[seq_i][offset:offset + fragment_length])
-            batch_outputs.append(full_sequences[seq_i][offset + 1:offset + fragment_length + 1])
-        yield one_hot(np.array(batch_inputs, dtype='uint8')), one_hot(np.array(batch_outputs, dtype='uint8'))
-
-
-def generators(dirname, desired_sample_rate, fragment_length, batch_size, fragment_stride, nb_output_bins,
-               learn_all_outputs, use_ulaw, randomize_batch_order, _rnd, random_train_batches):
-    fragment_generators = {}
-    nb_examples = {}
-    for set_name in ['train', 'test']:
-        set_dirname = os.path.join(dirname, set_name)
-        full_sequences = load_set(desired_sample_rate, set_dirname, use_ulaw)
-        fragment_generators[set_name] = select_generator(set_name, random_train_batches, full_sequences,
-                                                         fragment_length,
-                                                         batch_size, fragment_stride, nb_output_bins,
-                                                         randomize_batch_order, _rnd)
-        nb_examples[set_name] = int(sum(
-            [len(range(0, x.shape[0] - fragment_length, fragment_stride)) for x in
-            full_sequences]) / batch_size) * batch_size
-
-    return fragment_generators, nb_examples
-
-
-def generators_vctk(dirname, desired_sample_rate, fragment_length, batch_size, fragment_stride, nb_output_bins,
-                    learn_all_outputs, use_ulaw, test_factor, randomize_batch_order, _rnd, random_train_batches):
-    fragment_generators = {}
-    nb_examples = {}
-    speaker_dirs = os.listdir(dirname)
-    train_full_sequences = []
-    test_full_sequences = []
-    for speaker_dir in speaker_dirs:
-        full_sequences = load_set(desired_sample_rate, os.path.join(dirname, speaker_dir), use_ulaw)
-        nb_examples_train = int(math.ceil(len(full_sequences) * (1 - test_factor)))
-        train_full_sequences.extend(full_sequences[0:nb_examples_train])
-        test_full_sequences.extend(full_sequences[nb_examples_train:])
-
-    for set_name, set_sequences in zip(['train', 'test'], [train_full_sequences, test_full_sequences]):
-        fragment_generators[set_name] = select_generator(set_name, random_train_batches, full_sequences,
-                                                         fragment_length,
-                                                         batch_size, fragment_stride, nb_output_bins,
-                                                         randomize_batch_order, _rnd)
-        nb_examples[set_name] = int(sum(
-            [len(range(0, x.shape[0] - fragment_length, fragment_stride)) for x in
-            full_sequences]) / batch_size) * batch_size
-
-    return fragment_generators, nb_examples
-
-
-def load_set(desired_sample_rate, set_dirname, use_ulaw):
-    ulaw_str = '_ulaw' if use_ulaw else ''
-    cache_fn = os.path.join(set_dirname, 'processed_%d%s.npy' % (desired_sample_rate, ulaw_str))
-    if os.path.isfile(cache_fn):
-        full_sequences = np.load(cache_fn, fix_imports=True, encoding='bytes')
-    else:
-        file_names = [fn for fn in os.listdir(set_dirname) if fn.endswith('.wav')]
-        full_sequences = []
-        for fn in tqdm(file_names):
-            sequence = process_wav(desired_sample_rate, os.path.join(set_dirname, fn), use_ulaw)
-            full_sequences.append(sequence)
-        np.save(cache_fn, full_sequences)
-
-    return full_sequences
-
-
-def process_wav(desired_sample_rate, filename, use_ulaw):
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        channels = scipy.io.wavfile.read(filename)
-    file_sample_rate, audio = channels
-    audio = ensure_mono(audio)
-    audio = wav_to_float(audio)
-    if use_ulaw:
-        audio = ulaw(audio)
-    audio = ensure_sample_rate(desired_sample_rate, file_sample_rate, audio)
-    audio = float_to_uint8(audio)
-    return audio
-
-
-def ulaw(x, u=255):
-    x = np.sign(x) * (np.log(1 + u * np.abs(x)) / np.log(1 + u))
-    return x
+    def ulaw(x, u=255):
+        x = np.sign(x) * (np.log(1 + u * np.abs(x)) / np.log(1 + u))
+        return x
 
 
 def float_to_uint8(x):
@@ -183,9 +122,7 @@ def ensure_sample_rate(desired_sample_rate, file_sample_rate, mono_audio):
 
 
 def ensure_mono(raw_audio):
-    """
-    Just use first channel.
-    """
+    """Just use first channel."""
     if raw_audio.ndim == 2:
         raw_audio = raw_audio[:, 0]
     return raw_audio

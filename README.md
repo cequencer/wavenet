@@ -56,15 +56,6 @@ e.g.:
 Or for a smaller network (less channels per layer).
 ```$ KERAS_BACKEND=theano python2 wavenet.py with small```
 
-### VCTK:
-In order to use the VCTK dataset, first download the dataset by running `vctk/download_vctk.sh`.
-
-Training is done with:
-```$ KERAS_BACKEND=theano python2 wavenet.py with vctkdata```
-
-For smaller network:
-```$ KERAS_BACKEND=theano python2 wavenet.py with vctkdata small```
-
 ### Options:
 Train with different configurations:
 ```$ KERAS_BACKEND=theano python2 wavenet.py with 'option=value' 'option2=value'```
@@ -72,7 +63,6 @@ Available options:
 ```
   batch_size = 16
   data_dir = 'data'
-  data_dir_structure = 'flat'
   debug = False
   desired_sample_rate = 4410
   dilation_depth = 9
@@ -117,7 +107,6 @@ Available options:
 ## Todo:
 - [ ] Local conditioning
 - [ ] Global conditioning
-- [x] Training on CSTR VCTK Corpus
 - [x] CLI option to pick a wave file for the sample generation initial input. Done: see `predict_initial_input`.
 - [x] Fully randomized training batches
 - [x] Soft targets: by convolving a gaussian kernel over the one-hot targets, the network trains faster.

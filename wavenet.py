@@ -23,7 +23,7 @@ from sacred import Experiment
 from sacred.commands import print_config
 from tqdm import tqdm
 
-import dataset
+from dataset import DataSequence
 from keras.layers import Conv1D
 from wavenet_utils import categorical_mean_squared_error
 
@@ -33,10 +33,9 @@ ex = Experiment('wavenet')
 @ex.config
 def config():
     data_dir = 'data'
-    data_dir_structure = 'flat'  # Or 'vctk' for a speakerdir structure
-    test_factor = 0.1  # For 'vctk' structure, take test_factor amount of sequences for test set.
+    test_factor = 0.1
     nb_epoch = 1000
-    run_dir = None
+    run_dir = 'run'
     early_stopping_patience = 20
     desired_sample_rate = 4410
     batch_size = 16
@@ -97,25 +96,6 @@ def small():
 def soft_targets():
     train_with_soft_target_stdev = 0.5
     # TODO: smooth decay of stdev per epoch.
-
-
-@ex.named_config
-def vctkdata():
-    assert os.path.isdir(os.path.join('vctk', 'VCTK-Corpus')), "Please download vctk by running vctk/download_vctk.sh."
-    desired_sample_rate = 4000
-    data_dir = 'vctk/VCTK-Corpus/wav48'
-    data_dir_structure = 'vctk'
-    test_factor = 0.01
-
-
-@ex.named_config
-def vctkmod(desired_sample_rate):
-    nb_filters = 32
-    dilation_depth = 7
-    nb_stacks = 4
-    fragment_length = 1 + (compute_receptive_field_(desired_sample_rate, dilation_depth, nb_stacks)[0])
-    fragment_stride = int(desired_sample_rate / 10)
-    random_train_batches = True
 
 
 @ex.named_config
@@ -404,20 +384,14 @@ def write_samples(sample_file, out_val, use_ulaw):
 
 @ex.capture
 def get_generators(batch_size, data_dir, desired_sample_rate, fragment_length, fragment_stride, learn_all_outputs,
-                   nb_output_bins, use_ulaw, test_factor, data_dir_structure, randomize_batch_order, _rnd,
-                   random_train_batches):
-    if data_dir_structure == 'flat':
-        return dataset.generators(data_dir, desired_sample_rate, fragment_length, batch_size,
-                                  fragment_stride, nb_output_bins, learn_all_outputs, use_ulaw, randomize_batch_order,
-                                  _rnd, random_train_batches)
-
-    elif data_dir_structure == 'vctk':
-        return dataset.generators_vctk(data_dir, desired_sample_rate, fragment_length, batch_size,
-                                       fragment_stride, nb_output_bins, learn_all_outputs, use_ulaw, test_factor,
-                                       randomize_batch_order, _rnd, random_train_batches)
-    else:
-        raise ValueError('data_dir_structure must be "flat" or "vctk", is %s' % data_dir_structure)
-
+                   nb_output_bins, use_ulaw, test_factor):
+    fragment_generators = {}
+    nb_batches = {}
+    for set_name in ['train', 'test']:
+        set_dirname = os.path.join(data_dir, set_name)
+        fragment_generators[set_name] = DataSequence(set_dirname, desired_sample_rate, fragment_length, batch_size, fragment_stride, nb_output_bins, learn_all_outputs, use_ulaw)
+        nb_batches[set_name] = len(fragment_generators[set_name])
+    return fragment_generators, nb_batches
 
 @ex.command
 def test_make_soft(_log, train_with_soft_target_stdev, _config):
@@ -541,9 +515,10 @@ def main(run_dir, data_dir, nb_epoch, early_stopping_patience, desired_sample_ra
        model.load_weights(os.path.join(checkpoint_dir, last_checkpoint))
 
     model.fit_generator(data_generators['train'],
-                        nb_examples['train'] // 500,
-                        epochs=500,
+                        len(data_generators['train']),
+                        epochs=1,
                         validation_data=data_generators['test'],
-                        validation_steps=50 // batch_size,
+                        validation_steps=5,
                         callbacks=callbacks,
+                        use_multiprocessing=False,
                         verbose=keras_verbose)
